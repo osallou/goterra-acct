@@ -1,6 +1,6 @@
 
 influxdb:
-  url: "http://goterra-acct:8086"
+  url: "http://got-influx:8086"
   user: "goterra"
   password: "goterra"
 

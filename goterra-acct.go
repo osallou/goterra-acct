@@ -81,6 +81,7 @@ var HomeHandler = func(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// AcctGetHandler returns global stat usage for namespace
 var AcctGetHandler = func(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	nsID := vars["id"]
@@ -108,13 +109,50 @@ var AcctGetHandler = func(w http.ResponseWriter, r *http.Request) {
 		acctResults := map[string]interface{}{"acct": resp.Results}
 		json.NewEncoder(w).Encode(acctResults)
 		return
-	} else {
+	}
+	w.Header().Add("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+	respError := map[string]interface{}{"message": "failed to get stats"}
+	json.NewEncoder(w).Encode(respError)
+	return
+
+}
+
+// AcctGetFromHandler returns global stat usage for namespace starting at from timestamp (seconds)
+var AcctGetFromHandler = func(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	nsID := vars["id"]
+	from := vars["from"] + "s"
+	c, err := client.NewHTTPClient(client.HTTPConfig{
+		Addr:     configAcct.InfluxDB.URL,
+		Username: configAcct.InfluxDB.User,
+		Password: configAcct.InfluxDB.Password,
+	})
+	defer c.Close()
+	if err != nil {
 		w.Header().Add("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		respError := map[string]interface{}{"message": "failed to get stats"}
+		respError := map[string]interface{}{"message": err.Error}
 		json.NewEncoder(w).Encode(respError)
 		return
 	}
+
+	q := client.Query{
+		Command:  fmt.Sprintf("select sum(\"quantity\") as \"quantity\", sum(\"duration\") as \"duration\", max(\"quantity\") as \"max\" from \"goterra.acct\" where \"ns\" = '%s' and time > %s group by \"resource\",\"kind\";", nsID, from),
+		Database: "goterra",
+	}
+
+	if resp, respErr := c.Query(q); respErr == nil {
+		w.Header().Add("Content-Type", "application/json")
+		acctResults := map[string]interface{}{"acct": resp.Results}
+		json.NewEncoder(w).Encode(acctResults)
+		return
+	}
+	w.Header().Add("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+	respError := map[string]interface{}{"message": "failed to get stats"}
+	json.NewEncoder(w).Encode(respError)
+	return
 
 }
 
@@ -393,17 +431,21 @@ func fetchAcct(lastCheck int64) {
 				Password: "", // no password set
 				DB:       0,  // use default DB
 			})*/
+		gotError := false
 		runs := getLastVM(now, lastCheck)
 		for _, run := range runs {
 			log.Debug().Msgf("Run: %+v", run)
 			state, stateErr := getVMState(run.ID)
 			if stateErr != nil {
+				gotError = true
 				log.Error().Msgf("Failed to get state: %s", stateErr)
 				continue
 			}
 			setAccounting(c, run, state, lastCheck, now)
 		}
-		setLastCheck(now)
+		if !gotError {
+			setLastCheck(now)
+		}
 		//redisClient.Close()
 		time.Sleep(1 * time.Minute)
 	}
@@ -485,7 +527,7 @@ func main() {
 	r := mux.NewRouter()
 	r.HandleFunc("/acct", HomeHandler).Methods("GET")
 	r.HandleFunc("/acct/ns/{id}", AcctGetHandler).Methods("GET")
-	// 	r.HandleFunc("/deploy/ns/{id}", DeleteNSHandler).Methods("DELETE")             // Delete namespace
+	r.HandleFunc("/acct/ns/{id}/from/{from}", AcctGetFromHandler).Methods("GET")
 
 	c := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
