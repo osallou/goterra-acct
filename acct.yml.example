@@ -1,0 +1,9 @@
+
+influxdb:
+  url: "http://goterra-acct:8086"
+  user: "goterra"
+  password: "goterra"
+
+resources:
+  - "openstack_compute_instance_v2"
+  - "openstack_sharedfilesystem_share_v2"
