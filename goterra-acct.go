@@ -242,8 +242,8 @@ func getLastVM(now int64, lastCheck int64) []terraModel.Run {
 	if lastCheck > 0 {
 		filter = bson.M{
 			"$or": bson.A{
-				bson.M{"$gt": bson.M{
-					"end": lastCheck,
+				bson.M{"end": bson.M{
+					"$gt": lastCheck,
 				}},
 				bson.M{"end": 0},
 			},
