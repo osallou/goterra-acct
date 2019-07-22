@@ -84,7 +84,18 @@ var HomeHandler = func(w http.ResponseWriter, r *http.Request) {
 
 // ResourceHandler returns known used resources (on running deployments)
 var ResourceHandler = func(w http.ResponseWriter, r *http.Request) {
-	resources := getUsedResources()
+	resources := getUsedResources("")
+	w.Header().Add("Content-Type", "application/json")
+	resp := map[string]interface{}{"resources": resources}
+	json.NewEncoder(w).Encode(resp)
+	return
+}
+
+// ResourceNSHandler returns known used resources (on running deployments) for namespace
+var ResourceNSHandler = func(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	nsID := vars["id"]
+	resources := getUsedResources(nsID)
 	w.Header().Add("Content-Type", "application/json")
 	resp := map[string]interface{}{"resources": resources}
 	json.NewEncoder(w).Encode(resp)
@@ -368,6 +379,7 @@ type RunResource struct {
 	Run       string
 	Endpoint  string
 	Resources []Resource
+	Namespace string
 }
 
 func setAccounting(influxClient client.Client, run terraModel.Run, state *State, last int64, now int64) error {
@@ -387,6 +399,7 @@ func setAccounting(influxClient client.Client, run terraModel.Run, state *State,
 		Run:       run.ID.Hex(),
 		Endpoint:  run.Endpoint,
 		Resources: make([]Resource, 0),
+		Namespace: run.Namespace,
 	}
 
 	acctExtras := make(map[string]Extra)
@@ -513,11 +526,14 @@ func removeUsedResources(runID string) {
 	resourcesCollection.DeleteMany(ctx, filter)
 }
 
-func getUsedResources() []RunResource {
+func getUsedResources(ns string) []RunResource {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	runResources := make([]RunResource, 0)
 	filter := bson.M{}
+	if ns != "" {
+		filter["ns"] = ns
+	}
 	cursor, err := resourcesCollection.Find(ctx, filter)
 	if err != nil {
 		log.Error().Msgf("failed to get resources %s", err)
@@ -695,6 +711,7 @@ func main() {
 	r := mux.NewRouter()
 	r.HandleFunc("/acct", HomeHandler).Methods("GET")
 	r.HandleFunc("/acct/resources", ResourceHandler).Methods("GET")
+	r.HandleFunc("/acct/resources/ns/{id}", ResourceNSHandler).Methods("GET")
 	r.HandleFunc("/acct/ns/{id}", AcctGetHandler).Methods("GET")
 	r.HandleFunc("/acct/ns/{id}/from/{from}", AcctGetFromHandler).Methods("GET")
 	r.HandleFunc("/acct/ns/{id}/from/{from}/to/{to}", AcctGetFromToHandler).Methods("GET")
