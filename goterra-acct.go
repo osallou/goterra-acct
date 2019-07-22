@@ -39,6 +39,7 @@ var nsCollection *mongo.Collection
 var runCollection *mongo.Collection
 var runStateCollection *mongo.Collection
 var acctCollection *mongo.Collection
+var resourcesCollection *mongo.Collection
 
 //var InfluxHost = "http://localhost:8086" // TODO get from config
 
@@ -79,6 +80,15 @@ var HomeHandler = func(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]interface{}{"version": Version, "message": "ok"}
 	w.Header().Add("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// ResourceHandler returns known used resources (on running deployments)
+var ResourceHandler = func(w http.ResponseWriter, r *http.Request) {
+	resources := getUsedResources()
+	w.Header().Add("Content-Type", "application/json")
+	resp := map[string]interface{}{"resources": resources}
+	json.NewEncoder(w).Encode(resp)
+	return
 }
 
 // AcctGetHandler returns global stat usage for namespace
@@ -346,6 +356,20 @@ func getExtras(resourceType string, resourceValues map[string]interface{}) Extra
 
 }
 
+// Resource defined a vm, storage, ...
+type Resource struct {
+	Kind     string
+	Resource string
+	Quantity float64
+}
+
+// RunResource defines used resources by a run
+type RunResource struct {
+	Run       string
+	Endpoint  string
+	Resources []Resource
+}
+
 func setAccounting(influxClient client.Client, run terraModel.Run, state *State, last int64, now int64) error {
 	if last == 0 {
 		last = run.Start
@@ -357,6 +381,12 @@ func setAccounting(influxClient client.Client, run terraModel.Run, state *State,
 	if err != nil {
 		log.Error().Str("run", run.ID.Hex()).Msgf("failed to record stats %s", err)
 		return fmt.Errorf("could not create stats")
+	}
+
+	usedResources := RunResource{
+		Run:       run.ID.Hex(),
+		Endpoint:  run.Endpoint,
+		Resources: make([]Resource, 0),
 	}
 
 	acctExtras := make(map[string]Extra)
@@ -398,6 +428,12 @@ func setAccounting(influxClient client.Client, run terraModel.Run, state *State,
 			}
 		}
 
+		usedResources.Resources = append(usedResources.Resources, Resource{
+			Kind:     kind,
+			Resource: resourceType,
+			Quantity: fields["quantity"].(float64),
+		})
+
 		uniqueID := fmt.Sprintf("%s-%s", resourceType, kind)
 		if _, ok := acctExtras[uniqueID]; ok {
 			log.Info().Msgf("Check %s", uniqueID)
@@ -429,9 +465,24 @@ func setAccounting(influxClient client.Client, run terraModel.Run, state *State,
 					acctExtras[uniqueID] = extra
 				}
 
+				usedResources.Resources = append(usedResources.Resources, Resource{
+					Kind:     extra.Kind,
+					Resource: extra.Name,
+					Quantity: extra.Fields["quantity"].(float64),
+				})
+
 			}
 		}
 
+	}
+
+	if run.End != 0 {
+		removeUsedResources(run.ID.Hex())
+	} else {
+		errResources := setUsedResources(usedResources)
+		if errResources != nil {
+			log.Error().Str("run", run.ID.Hex()).Msgf("failed to record resources %s", errResources)
+		}
 	}
 
 	for _, extra := range acctExtras {
@@ -449,6 +500,59 @@ func setAccounting(influxClient client.Client, run terraModel.Run, state *State,
 		log.Error().Str("run", run.ID.Hex()).Msgf("failed to batch stats %s", err)
 		return fmt.Errorf("could not create stats")
 	}
+	return nil
+}
+
+func removeUsedResources(runID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	filter := bson.M{
+		"run": runID,
+	}
+	resourcesCollection.DeleteMany(ctx, filter)
+}
+
+func getUsedResources() []RunResource {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	runResources := make([]RunResource, 0)
+	filter := bson.M{}
+	cursor, err := resourcesCollection.Find(ctx, filter)
+	if err != nil {
+		log.Error().Msgf("failed to get resources %s", err)
+		return runResources
+	}
+	for cursor.Next(ctx) {
+		var runResource RunResource
+		cursor.Decode(&runResource)
+		log.Error().Msgf("add resource %+v", runResource)
+		runResources = append(runResources, runResource)
+	}
+	return runResources
+}
+
+func setUsedResources(resources RunResource) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	filter := bson.M{
+		"run": resources.Run,
+	}
+	var resourcedb RunResource
+	resourceErr := resourcesCollection.FindOne(ctx, filter).Decode(&resourcedb)
+	if resourceErr == nil {
+		// We already recorded used resources, skipping
+		log.Debug().Str("run", resources.Run).Msgf("resources already recorded, skipping")
+		return nil
+	}
+
+	newRunResource, resourceErr := resourcesCollection.InsertOne(ctx, resources)
+	if resourceErr != nil {
+		log.Error().Str("run", resources.Run).Msgf("Failed to insert run resources: %s", resourceErr)
+		return resourceErr
+	}
+	log.Debug().Str("Resources", newRunResource.InsertedID.(primitive.ObjectID).Hex()).Msg("New run resource inserted")
 	return nil
 }
 
@@ -572,6 +676,7 @@ func main() {
 	runCollection = mongoClient.Database(config.Mongo.DB).Collection("run")
 	runStateCollection = mongoClient.Database(config.Mongo.DB).Collection("runstate")
 	acctCollection = mongoClient.Database(config.Mongo.DB).Collection("acct")
+	resourcesCollection = mongoClient.Database(config.Mongo.DB).Collection("acctresources")
 
 	// userCollection = mongoClient.Database(config.Mongo.DB).Collection("users")
 	var acctCheck AcctCheck
@@ -589,6 +694,7 @@ func main() {
 
 	r := mux.NewRouter()
 	r.HandleFunc("/acct", HomeHandler).Methods("GET")
+	r.HandleFunc("/acct/resources", ResourceHandler).Methods("GET")
 	r.HandleFunc("/acct/ns/{id}", AcctGetHandler).Methods("GET")
 	r.HandleFunc("/acct/ns/{id}/from/{from}", AcctGetFromHandler).Methods("GET")
 	r.HandleFunc("/acct/ns/{id}/from/{from}/to/{to}", AcctGetFromToHandler).Methods("GET")
