@@ -85,6 +85,7 @@ var HomeHandler = func(w http.ResponseWriter, r *http.Request) {
 var AcctGetHandler = func(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	nsID := vars["id"]
+
 	c, err := client.NewHTTPClient(client.HTTPConfig{
 		Addr:     configAcct.InfluxDB.URL,
 		Username: configAcct.InfluxDB.User,
@@ -118,11 +119,72 @@ var AcctGetHandler = func(w http.ResponseWriter, r *http.Request) {
 
 }
 
+// AcctGetFromToHandler returns global stat usage for namespace starting between timestamps (seconds), optional query parameter days=1 to get results grouped by days
+var AcctGetFromToHandler = func(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	nsID := vars["id"]
+	from := vars["from"] + "s"
+	to := vars["to"] + "s"
+
+	groupByDays := false
+	days, ok := r.URL.Query()["days"]
+	if ok && days[0] == "1" {
+		groupByDays = true
+	}
+
+	c, err := client.NewHTTPClient(client.HTTPConfig{
+		Addr:     configAcct.InfluxDB.URL,
+		Username: configAcct.InfluxDB.User,
+		Password: configAcct.InfluxDB.Password,
+	})
+	defer c.Close()
+	if err != nil {
+		w.Header().Add("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		respError := map[string]interface{}{"message": err.Error}
+		json.NewEncoder(w).Encode(respError)
+		return
+	}
+
+	timeFilter := ""
+	if groupByDays {
+		timeFilter = "time(1d),"
+	}
+
+	q := client.Query{
+		Command:  fmt.Sprintf("select sum(\"quantity\") as \"quantity\", sum(\"duration\") as \"duration\", max(\"quantity\") as \"max\" from \"goterra.acct\" where \"ns\" = '%s' and time > %s and time < %s group by %s\"resource\",\"kind\";", nsID, from, to, timeFilter),
+		Database: "goterra",
+	}
+
+	if resp, respErr := c.Query(q); respErr == nil {
+		w.Header().Add("Content-Type", "application/json")
+		acctResults := map[string]interface{}{"acct": resp.Results}
+		json.NewEncoder(w).Encode(acctResults)
+		return
+	}
+	w.Header().Add("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+	respError := map[string]interface{}{"message": "failed to get stats"}
+	json.NewEncoder(w).Encode(respError)
+	return
+
+}
+
 // AcctGetFromHandler returns global stat usage for namespace starting at from timestamp (seconds)
 var AcctGetFromHandler = func(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	nsID := vars["id"]
 	from := vars["from"] + "s"
+	groupByDays := false
+	days, ok := r.URL.Query()["days"]
+	if ok && days[0] == "1" {
+		groupByDays = true
+	}
+	timeFilter := ""
+	if groupByDays {
+		timeFilter = "time(1d),"
+	}
+
 	c, err := client.NewHTTPClient(client.HTTPConfig{
 		Addr:     configAcct.InfluxDB.URL,
 		Username: configAcct.InfluxDB.User,
@@ -138,7 +200,7 @@ var AcctGetFromHandler = func(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := client.Query{
-		Command:  fmt.Sprintf("select sum(\"quantity\") as \"quantity\", sum(\"duration\") as \"duration\", max(\"quantity\") as \"max\" from \"goterra.acct\" where \"ns\" = '%s' and time > %s group by \"resource\",\"kind\";", nsID, from),
+		Command:  fmt.Sprintf("select sum(\"quantity\") as \"quantity\", sum(\"duration\") as \"duration\", max(\"quantity\") as \"max\" from \"goterra.acct\" where \"ns\" = '%s' and time > %s group by %s\"resource\",\"kind\";", nsID, from, timeFilter),
 		Database: "goterra",
 	}
 
@@ -433,6 +495,7 @@ func fetchAcct(lastCheck int64) {
 			})*/
 		gotError := false
 		runs := getLastVM(now, lastCheck)
+		log.Info().Msgf("Update %d VMs", len(runs))
 		for _, run := range runs {
 			log.Debug().Msgf("Run: %+v", run)
 			state, stateErr := getVMState(run.ID)
@@ -528,6 +591,7 @@ func main() {
 	r.HandleFunc("/acct", HomeHandler).Methods("GET")
 	r.HandleFunc("/acct/ns/{id}", AcctGetHandler).Methods("GET")
 	r.HandleFunc("/acct/ns/{id}/from/{from}", AcctGetFromHandler).Methods("GET")
+	r.HandleFunc("/acct/ns/{id}/from/{from}/to/{to}", AcctGetFromToHandler).Methods("GET")
 
 	c := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},
