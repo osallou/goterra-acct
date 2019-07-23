@@ -532,7 +532,7 @@ func getUsedResources(ns string) []RunResource {
 	runResources := make([]RunResource, 0)
 	filter := bson.M{}
 	if ns != "" {
-		filter["ns"] = ns
+		filter["namespace"] = ns
 	}
 	cursor, err := resourcesCollection.Find(ctx, filter)
 	if err != nil {
