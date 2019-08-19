@@ -613,22 +613,25 @@ func fetchAcct(lastCheck int64) {
 				Password: "", // no password set
 				DB:       0,  // use default DB
 			})*/
-		gotError := false
+		// gotError := false
 		runs := getLastVM(now, lastCheck)
 		log.Info().Msgf("Update %d VMs", len(runs))
 		for _, run := range runs {
 			log.Debug().Msgf("Run: %+v", run)
 			state, stateErr := getVMState(run.ID)
 			if stateErr != nil {
-				gotError = true
+				// gotError = true
 				log.Error().Msgf("Failed to get state: %s", stateErr)
 				continue
 			}
 			setAccounting(c, run, state, lastCheck, now)
 		}
-		if !gotError {
+		setLastCheck(now)
+		lastCheck = now
+		/*if !gotError {
 			setLastCheck(now)
-		}
+			lastCheck = now
+		}*/
 		//redisClient.Close()
 		time.Sleep(1 * time.Minute)
 	}
