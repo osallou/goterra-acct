@@ -234,7 +234,7 @@ var AcctGetFromHandler = func(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := client.Query{
-		Command:  fmt.Sprintf("select sum(\"quantity\") as \"quantity\", sum(\"duration\") as \"duration\", max(\"quantity\") as \"max\" from \"goterra.acct\" where \"ns\" = '%s' and time > %s group by %s\"resource\",\"kind\";", nsID, from, timeFilter),
+		Command:  fmt.Sprintf("select sum(\"quantity\") as \"quantity\", sum(\"duration\") as \"duration\", max(\"quantity\") as \"max\", sum(\"cost\") as \"cost\" from \"goterra.acct\" where \"ns\" = '%s' and time > %s group by %s\"resource\",\"kind\";", nsID, from, timeFilter),
 		Database: "goterra",
 	}
 
