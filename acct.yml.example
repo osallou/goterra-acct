@@ -7,3 +7,23 @@ influxdb:
 resources:
   - "openstack_compute_instance_v2"
   - "openstack_sharedfilesystem_share_v2"
+
+billing:
+   default:
+     openstack_block_storage:
+           block_device: 0
+     openstack_compute_instance_v2:
+           m1.small: 0
+           m1.large: 0
+     openstack_sharedfilesystem_share_v2:
+           shared: 0
+   endpoints:
+     - id: "5d1dc8f33137cfe23c714cf8"
+       billing:
+         openstack_block_storage:
+           block_device: 0.001
+         openstack_compute_instance_v2:
+           m1.small: 0.001
+           m1.large: 0.002
+         openstack_sharedfilesystem_share_v2:
+           shared: 0.0

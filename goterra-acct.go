@@ -61,10 +61,23 @@ type InfluxDB struct {
 	Password string
 }
 
+// BillingEndpoint defines billing for specific endpoints
+type BillingEndpoint struct {
+	ID      string
+	Billing map[string]map[string]float64
+}
+
+// Billing maps resource usage to cost
+type Billing struct {
+	Default   map[string]map[string]float64
+	Endpoints []BillingEndpoint
+}
+
 // AcctConfig matches acct.yml config
 type AcctConfig struct {
 	InfluxDB  InfluxDB
 	Resources []string
+	Billing   Billing
 }
 
 // AcctCheck is a unique mongodb record to know when last check was done
@@ -122,7 +135,7 @@ var AcctGetHandler = func(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := client.Query{
-		Command:  fmt.Sprintf("select sum(\"quantity\") as \"quantity\", sum(\"duration\") as \"duration\" from \"goterra.acct\" where \"ns\" = '%s' group by \"resource\",\"kind\";", nsID),
+		Command:  fmt.Sprintf("select sum(\"quantity\") as \"quantity\", sum(\"duration\") as \"duration\", sum(\"cost\") as \"cost\" from \"goterra.acct\" where \"ns\" = '%s' group by \"resource\",\"kind\";", nsID),
 		Database: "goterra",
 	}
 
@@ -173,7 +186,7 @@ var AcctGetFromToHandler = func(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := client.Query{
-		Command:  fmt.Sprintf("select sum(\"quantity\") as \"quantity\", sum(\"duration\") as \"duration\", max(\"quantity\") as \"max\" from \"goterra.acct\" where \"ns\" = '%s' and time > %s and time < %s group by %s\"resource\",\"kind\";", nsID, from, to, timeFilter),
+		Command:  fmt.Sprintf("select sum(\"quantity\") as \"quantity\", sum(\"duration\") as \"duration\", max(\"quantity\") as \"max\", sum(\"cost\") as \"cost\" from \"goterra.acct\" where \"ns\" = '%s' and time > %s and time < %s group by %s\"resource\",\"kind\";", nsID, from, to, timeFilter),
 		Database: "goterra",
 	}
 
@@ -382,6 +395,37 @@ type RunResource struct {
 	Namespace string
 }
 
+func getQuantifier(endpoint string, kind string, name string) (cost float64) {
+	billing, ok := configAcct.Billing.Default[name]
+	if ok {
+		costValue, costOK := billing[kind]
+		if costOK {
+			cost = costValue
+		}
+	}
+	var epBilling map[string]map[string]float64
+	for _, ep := range configAcct.Billing.Endpoints {
+		if ep.ID == endpoint {
+			epBilling = ep.Billing
+			break
+		}
+	}
+	if epBilling != nil {
+		billing, ok = epBilling[name]
+		if ok {
+			costValue, costOK := billing[kind]
+			if costOK {
+				cost = costValue
+			}
+		}
+	}
+	log.Debug().Str("endpoint", endpoint).Str("kind", kind).Str("name", name).Msgf("Quantifier = %f", cost)
+	return cost
+}
+
+// computes used resources from last check
+//
+// If this is first check for this run, then accounts only from check time, not start time
 func setAccounting(influxClient client.Client, run terraModel.Run, state *State, last int64, now int64) error {
 	if last == 0 {
 		last = run.Start
@@ -500,6 +544,7 @@ func setAccounting(influxClient client.Client, run terraModel.Run, state *State,
 
 	for _, extra := range acctExtras {
 		tags := map[string]string{"endpoint": run.Endpoint, "resource": extra.Name, "ns": run.Namespace, "kind": extra.Kind}
+		extra.Fields["cost"] = extra.Fields["duration"].(float64) * getQuantifier(run.Endpoint, extra.Kind, extra.Name)
 		pt, err := client.NewPoint("goterra.acct", tags, extra.Fields, ts)
 		if err != nil {
 			log.Error().Str("run", run.ID.Hex()).Str("resource", extra.Name).Msgf("failed to record stats %s", err)
